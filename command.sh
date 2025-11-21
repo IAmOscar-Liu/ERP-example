@@ -1,0 +1,1 @@
+docker run --name erp-example -e POSTGRES_USER=user -e POSTGRES_PASSWORD=password -p 5433:5432 -d postgres
