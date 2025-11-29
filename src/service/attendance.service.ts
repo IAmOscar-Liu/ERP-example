@@ -15,6 +15,7 @@ import {
   CreateCorrectionPayload,
   ReviewCorrectionPayload,
 } from "../repository";
+import { PaginationQuery } from "../type/request";
 
 /**
  * 你也可以從 schema 拿型別，不過這裡直接用 ReturnType 從 repository 推導，
@@ -125,12 +126,13 @@ class AttendanceService {
    * 員工查自己的補卡申請列表
    */
   async listCorrectionsForEmployee(
-    employeeId: string
+    employeeId: string,
+    query?: PaginationQuery
   ): Promise<
     ServiceResponse<Awaited<ReturnType<typeof listCorrectionsForEmployee>>>
   > {
     try {
-      const rows = await listCorrectionsForEmployee(employeeId);
+      const rows = await listCorrectionsForEmployee(employeeId, query ?? {});
       return {
         success: true,
         data: rows,
@@ -145,14 +147,18 @@ class AttendanceService {
    * 你之後可以在那邊加上「這個 approver 負責哪幾個人」的過濾）
    */
   async listPendingCorrectionsForApprover(
-    approverEmployeeId: string
+    approverEmployeeId: string,
+    query?: PaginationQuery
   ): Promise<
     ServiceResponse<
       Awaited<ReturnType<typeof listPendingCorrectionsForApprover>>
     >
   > {
     try {
-      const rows = await listPendingCorrectionsForApprover(approverEmployeeId);
+      const rows = await listPendingCorrectionsForApprover(
+        approverEmployeeId,
+        query ?? {}
+      );
       return {
         success: true,
         data: rows,

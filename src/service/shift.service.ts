@@ -16,18 +16,9 @@ import {
   CreateShiftChangeInput,
   ReviewShiftChangeInput,
   UpsertShiftScheduleInput,
+  ShiftChangeListInput,
+  ShiftScheduleQueryInput,
 } from "../repository/shift.repository"; // ensure repository/index.ts has `export * from "./shift.repository";`
-
-interface ShiftScheduleQueryInput {
-  employeeId?: string;
-  fromDate: string; // YYYY-MM-DD
-  toDate: string; // YYYY-MM-DD
-}
-
-interface ShiftChangeListInput {
-  employeeId?: string;
-  status?: "pending" | "approved" | "rejected";
-}
 
 class ShiftService {
   // -----------------------------

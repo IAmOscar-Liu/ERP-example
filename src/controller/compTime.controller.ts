@@ -11,7 +11,7 @@ class CompTimeController {
   }
 
   async listTransactions(req: Request, res: Response) {
-    const { employeeId, type, from, to } = req.query;
+    const { employeeId, type, from, to, page, limit } = req.query;
     const result = await compTimeService.listTransactions({
       employeeId: employeeId ? String(employeeId) : undefined,
       type: type ? (String(type) as CompTimeTxnFilter["type"]) : undefined,
@@ -19,6 +19,8 @@ class CompTimeController {
         ? new Date(typeof from === "number" ? from : String(from))
         : undefined,
       to: to ? new Date(typeof to === "number" ? to : String(to)) : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
     sendJsonResponse(res, result);
   }
@@ -30,13 +32,15 @@ class CompTimeController {
 
   async listForEmployee(req: Request, res: Response) {
     const { id: employeeId } = req.params;
-    const { type, from, to } = req.query;
+    const { type, from, to, page, limit } = req.query;
     const result = await compTimeService.listForEmployee(employeeId, {
       type: type ? (String(type) as CompTimeTxnFilter["type"]) : undefined,
       from: from
         ? new Date(typeof from === "number" ? from : String(from))
         : undefined,
       to: to ? new Date(typeof to === "number" ? to : String(to)) : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
     sendJsonResponse(res, result);
   }

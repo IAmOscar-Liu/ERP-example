@@ -2,6 +2,7 @@ import { Router } from "express";
 import OvertimeController from "../controller/overtime.controller";
 import OvertimeMiddleware from "../middleware/overtime.middleware";
 import isAuth from "../middleware/isAuth";
+import requirePermission from "../middleware/requirePermission";
 
 const router = Router();
 
@@ -12,7 +13,7 @@ router.post(
   OvertimeController.createOvertime
 );
 router.put(
-  "/update",
+  "/update/:id",
   isAuth,
   OvertimeMiddleware.updateOvertime,
   OvertimeController.updateOvertime
@@ -21,6 +22,7 @@ router.get("/list", isAuth, OvertimeController.listOvertime);
 router.put(
   "/review",
   isAuth,
+  requirePermission(["OVERTIME_REVIEW"]),
   OvertimeMiddleware.reviewOvertime,
   OvertimeController.reviewOvertime
 );

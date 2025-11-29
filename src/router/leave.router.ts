@@ -2,6 +2,7 @@ import { Router } from "express";
 import LeaveController from "../controller/leave.controller";
 import LeaveMiddleware from "../middleware/leave.middleware";
 import isAuth from "../middleware/isAuth";
+import requirePermission from "../middleware/requirePermission";
 
 const router = Router();
 
@@ -14,7 +15,7 @@ router.post(
   LeaveController.createLeave
 );
 router.put(
-  "/update",
+  "/update/:id",
   isAuth,
   LeaveMiddleware.updateLeave,
   LeaveController.updateLeave
@@ -23,6 +24,7 @@ router.get("/list", isAuth, LeaveController.listLeaves);
 router.put(
   "/review",
   isAuth,
+  requirePermission(["LEAVE_REVIEW"]),
   LeaveMiddleware.reviewLeave,
   LeaveController.reviewLeave
 );

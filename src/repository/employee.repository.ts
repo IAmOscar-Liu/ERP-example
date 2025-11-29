@@ -2,7 +2,8 @@
 import bcrypt from "bcrypt";
 import { eq, ilike } from "drizzle-orm";
 import { db, employees, users } from "../db";
-import { UserRow } from "./user.repository";
+import { CustomError } from "../lib/error";
+import { getUserRoles, UserRow } from "./user.repository";
 
 export type EmployeeRow = typeof employees.$inferSelect;
 export type NewEmployee = typeof employees.$inferInsert;
@@ -53,11 +54,11 @@ export async function listEmployees(filter: EmployeeFilter = {}) {
       }
       return helpers.and(...conditions);
     },
-    with: {
-      department: true,
-      position: true,
-      manager: true,
-    },
+    // with: {
+    //   department: true,
+    //   position: true,
+    //   manager: true,
+    // },
     orderBy: (t, { asc }) => asc(t.fullName),
   });
 }
@@ -277,4 +278,18 @@ export async function resetUserPasswordByEmail(
     .returning();
 
   return updated;
+}
+
+export async function getEmployeeRoles(employeeId: string) {
+  const employee = await db.query.employees.findFirst({
+    where: (t, { eq }) => eq(t.id, employeeId),
+  });
+  if (!employee) {
+    throw new CustomError("Employee not found", 404);
+  }
+  const userId = employee.userId;
+  if (!userId) {
+    return [];
+  }
+  return getUserRoles(userId);
 }

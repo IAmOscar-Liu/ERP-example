@@ -27,7 +27,7 @@ class LeaveController {
   }
 
   async listLeaves(req: Request, res: Response) {
-    const { employeeId, status, from, to } = req.query;
+    const { employeeId, status, from, to, page, limit } = req.query;
     const result = await leaveService.listLeaves({
       employeeId: employeeId ? String(employeeId) : undefined,
       status: status ? (String(status) as LeaveFilter["status"]) : undefined,
@@ -35,6 +35,8 @@ class LeaveController {
         ? new Date(typeof from === "number" ? from : String(from))
         : undefined,
       to: to ? new Date(typeof to === "number" ? to : String(to)) : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
     sendJsonResponse(res, result);
   }
@@ -51,13 +53,15 @@ class LeaveController {
 
   async listLeavesForEmployee(req: Request, res: Response) {
     const { id: employeeId } = req.params;
-    const { status, from, to } = req.query;
+    const { status, from, to, page, limit } = req.query;
     const result = await leaveService.listLeavesForEmployee(employeeId, {
       status: status ? (String(status) as LeaveFilter["status"]) : undefined,
       from: from
         ? new Date(typeof from === "number" ? from : String(from))
         : undefined,
       to: to ? new Date(typeof to === "number" ? to : String(to)) : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
     sendJsonResponse(res, result);
   }

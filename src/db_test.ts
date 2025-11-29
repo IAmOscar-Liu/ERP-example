@@ -1,12 +1,61 @@
 import "dotenv/config";
-import { db, departments, employees, leaveTypes } from "./db";
+import { sql } from "drizzle-orm";
 import {
-  clock,
-  getAttendanceDaysForEmployee,
-} from "./repository/attendance.repository";
+  db,
+  users,
+  departments,
+  employees,
+  leaveTypes,
+  roles,
+  permissions,
+  rolePermissions,
+  userRoles,
+} from "./db";
 
 // -------------------------------------------------------
-// (NEW) Seed common leave types
+// 1. Reset / wipe all data
+// -------------------------------------------------------
+async function resetDatabase() {
+  console.log("Resetting database (TRUNCATE ALL TABLES)...");
+
+  // 依照 schema 中的實際 table name
+  await db.execute(sql`
+    TRUNCATE TABLE
+      user_roles,
+      role_permissions,
+      password_reset_tokens,
+      payroll_preview_items,
+      payroll_previews,
+      payroll_item_defs,
+      comp_time_transactions,
+      comp_time_balances,
+      overtime_requests,
+      leave_requests,
+      leave_types,
+      attendance_corrections,
+      time_clock_records,
+      attendance_days,
+      shift_change_requests,
+      shift_schedules,
+      shift_types,
+      onboarding_flow_items,
+      onboarding_flows,
+      onboarding_template_items,
+      onboarding_templates,
+      employees,
+      positions,
+      departments,
+      users,
+      roles,
+      permissions
+    RESTART IDENTITY CASCADE;
+  `);
+
+  console.log("Database reset complete.");
+}
+
+// -------------------------------------------------------
+// 2. Seed common leave types (含補休 COMP)
 // -------------------------------------------------------
 async function seedLeaveTypes() {
   console.log("Seeding leave types...");
@@ -52,41 +101,123 @@ async function seedLeaveTypes() {
       name: "Official Leave",
       paid: true,
     },
+    // ⭐ 補休
     {
       code: "COMP",
       name: "Compensatory Leave",
-      paid: false, // 補休不是薪資假，使用補休時不另外給薪
+      paid: false,
     },
   ];
 
-  for (const t of commonTypes) {
-    // Avoid duplicate seed
-    const exists = await db.query.leaveTypes.findFirst({
-      where: (tbl, { eq }) => eq(tbl.code, t.code),
-    });
-
-    if (!exists) {
-      await db.insert(leaveTypes).values(t);
-      console.log(`Inserted leave type: ${t.code} - ${t.name}`);
-    } else {
-      console.log(`Skipped existing leave type: ${t.code}`);
-    }
-  }
+  // 因為前面已經 TRUNCATE，所以這裡直接 insert 即可
+  await db.insert(leaveTypes).values(commonTypes);
 
   console.log("Leave types seeding complete.");
 }
 
 // -------------------------------------------------------
-// Main test flow
+// 3. Seed roles & permissions
+//    - ADMIN: 不綁任何 permission，由程式邏輯視為全權
+//    - HR_MANAGER: 有 LEAVE_REVIEW + OVERTIME_REVIEW
+//    - REVIEWER: 也有這兩個 permission
 // -------------------------------------------------------
-async function main() {
-  console.log("=== DB TEST START ===");
+async function seedRolesAndPermissions() {
+  console.log("Seeding roles & permissions...");
 
-  // Seed leave types
-  await seedLeaveTypes();
+  // Roles
+  const [adminRole] = await db
+    .insert(roles)
+    .values({
+      code: "ADMIN",
+      name: "Administrator",
+      description: "System administrator (has all permissions via code logic)",
+    })
+    .returning();
 
-  // 1. 建一個 Department
-  console.log("Creating department...");
+  const [hrRole] = await db
+    .insert(roles)
+    .values({
+      code: "HR_MANAGER",
+      name: "HR Manager",
+      description: "HR manager who can manage HR-related configurations",
+    })
+    .returning();
+
+  const [reviewerRole] = await db
+    .insert(roles)
+    .values({
+      code: "REVIEWER",
+      name: "Request Reviewer",
+      description: "Can review leave and overtime requests",
+    })
+    .returning();
+
+  console.log("Inserted roles:", {
+    adminRole,
+    hrRole,
+    reviewerRole,
+  });
+
+  // Permissions
+  const [leaveReviewPerm] = await db
+    .insert(permissions)
+    .values({
+      code: "LEAVE_REVIEW",
+      name: "Review leave requests",
+      module: "leave",
+    })
+    .returning();
+
+  const [overtimeReviewPerm] = await db
+    .insert(permissions)
+    .values({
+      code: "OVERTIME_REVIEW",
+      name: "Review overtime requests",
+      module: "overtime",
+    })
+    .returning();
+
+  console.log("Inserted permissions:", {
+    leaveReviewPerm,
+    overtimeReviewPerm,
+  });
+
+  // Role → Permission mapping
+  // ADMIN 不綁，透過程式邏輯視為 superuser
+  await db.insert(rolePermissions).values([
+    // HR_MANAGER
+    {
+      roleId: hrRole.id,
+      permissionId: leaveReviewPerm.id,
+    },
+    {
+      roleId: hrRole.id,
+      permissionId: overtimeReviewPerm.id,
+    },
+    // REVIEWER
+    {
+      roleId: reviewerRole.id,
+      permissionId: leaveReviewPerm.id,
+    },
+    {
+      roleId: reviewerRole.id,
+      permissionId: overtimeReviewPerm.id,
+    },
+  ]);
+
+  console.log("Role-permission mapping complete.");
+}
+
+// -------------------------------------------------------
+// 4. Create ENG department + 3 employees (each with user)
+//    - admin: has ADMIN role
+//    - hr:   has HR_MANAGER role
+//    - staff: no roles
+// -------------------------------------------------------
+async function seedDepartmentAndEmployees() {
+  console.log("Creating ENG department and sample employees...");
+
+  // 1) Department
   const [dept] = await db
     .insert(departments)
     .values({
@@ -97,66 +228,129 @@ async function main() {
 
   console.log("Created department:", dept);
 
-  // 2. 建一個 Employee
   const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
 
-  console.log("Creating employee...");
-  const [emp] = await db
+  // 2) Users
+  // ⚠️ passwordHash 這裡只是示意，你可以替換為實際 bcrypt hash
+  const [adminUser] = await db
+    .insert(users)
+    .values({
+      email: "admin@example.com",
+      passwordHash:
+        "$2b$10$D3N/q9zLUPwguVP8THhNU.MNUxtYTsv1vZPbVQ2.WNvro7bfYGZSi",
+    })
+    .returning();
+
+  const [hrUser] = await db
+    .insert(users)
+    .values({
+      email: "hr@example.com",
+      passwordHash:
+        "$2b$10$D3N/q9zLUPwguVP8THhNU.MNUxtYTsv1vZPbVQ2.WNvro7bfYGZSi",
+    })
+    .returning();
+
+  const [staffUser] = await db
+    .insert(users)
+    .values({
+      email: "staff@example.com",
+      passwordHash:
+        "$2b$10$D3N/q9zLUPwguVP8THhNU.MNUxtYTsv1vZPbVQ2.WNvro7bfYGZSi",
+    })
+    .returning();
+
+  // 3) Employees
+  const [adminEmp] = await db
     .insert(employees)
     .values({
+      userId: adminUser.id,
       employeeNo: "E0001",
-      fullName: "Test User",
-      email: "test.user@example.com",
+      fullName: "Admin User",
+      email: adminUser.email,
       hireDate: todayStr,
       departmentId: dept.id,
     })
     .returning();
 
-  console.log("Created employee:", emp);
+  const [hrEmp] = await db
+    .insert(employees)
+    .values({
+      userId: hrUser.id,
+      employeeNo: "E0002",
+      fullName: "HR User",
+      email: hrUser.email,
+      hireDate: todayStr,
+      departmentId: dept.id,
+    })
+    .returning();
 
-  // 3. 打卡
-  console.log("Clock in...");
-  await clock({
-    employeeId: emp.id,
-    direction: "in",
-    source: "web",
+  const [staffEmp] = await db
+    .insert(employees)
+    .values({
+      userId: staffUser.id,
+      employeeNo: "E0003",
+      fullName: "Staff User",
+      email: staffUser.email,
+      hireDate: todayStr,
+      departmentId: dept.id,
+    })
+    .returning();
+
+  console.log("Created employees:", {
+    adminEmp,
+    hrEmp,
+    staffEmp,
   });
 
-  await new Promise((r) => setTimeout(r, 1000));
-
-  console.log("Clock out...");
-  await clock({
-    employeeId: emp.id,
-    direction: "out",
-    source: "web",
+  // 4) Assign roles to users
+  const adminRole = await db.query.roles.findFirst({
+    where: (tbl, { eq }) => eq(tbl.code, "ADMIN"),
+  });
+  const hrRole = await db.query.roles.findFirst({
+    where: (tbl, { eq }) => eq(tbl.code, "HR_MANAGER"),
   });
 
-  // 4. 查今天出勤
-  const today = todayStr;
-
-  console.log("Fetching attendance days for employee on", today);
-
-  const days = await getAttendanceDaysForEmployee({
-    employeeId: emp.id,
-    fromDate: today,
-    toDate: today,
-  });
-
-  console.log("Attendance result:");
-  for (const d of days) {
-    console.log({
-      workDate: d.workDate,
-      firstInAt: d.firstInAt,
-      lastOutAt: d.lastOutAt,
-      workMinutes: d.workMinutes,
-      status: d.status,
-    });
+  if (!adminRole || !hrRole) {
+    throw new Error("Roles not found when assigning to users");
   }
 
-  console.log("=== DB TEST END ===");
+  await db.insert(userRoles).values([
+    {
+      userId: adminUser.id,
+      roleId: adminRole.id,
+    },
+    {
+      userId: hrUser.id,
+      roleId: hrRole.id,
+    },
+    // staffUser: intentionally no roles
+  ]);
+
+  console.log("Assigned roles to users:", {
+    adminUserId: adminUser.id,
+    adminRoleCode: adminRole.code,
+    hrUserId: hrUser.id,
+    hrRoleCode: hrRole.code,
+    staffUserId: staffUser.id,
+    staffRoles: [],
+  });
 }
 
-seedLeaveTypes()
+// -------------------------------------------------------
+// Main
+// -------------------------------------------------------
+async function main() {
+  console.log("=== DB RESET & SEED START ===");
+
+  await resetDatabase();
+  await seedLeaveTypes();
+  await seedRolesAndPermissions();
+  await seedDepartmentAndEmployees();
+
+  console.log("=== DB RESET & SEED DONE ===");
+}
+
+main()
   .then(() => {
     console.log("Done.");
     process.exit(0);

@@ -1,6 +1,6 @@
 // src/repository/attendance.ts
 
-import { eq } from "drizzle-orm";
+import { and, count, eq, gte, lte, not, sql, sum } from "drizzle-orm";
 import {
   attendanceCorrections,
   attendanceDays,
@@ -8,6 +8,7 @@ import {
   timeClockRecords,
 } from "../db";
 import { toDateOnlyString } from "../lib/general";
+import { PaginationQuery } from "../type/request";
 
 // ==============================
 // 型別定義
@@ -24,8 +25,8 @@ export interface ClockPayload {
   userAgent?: string;
 }
 
-export interface AttendanceQueryByEmployee {
-  employeeId: string;
+export interface AttendanceQueryByEmployee extends PaginationQuery {
+  employeeId?: string;
   fromDate?: string; // "YYYY-MM-DD"
   toDate?: string; // "YYYY-MM-DD"
 }
@@ -66,7 +67,7 @@ export interface ReviewCorrectionPayload {
  */
 export async function clock(payload: ClockPayload) {
   const now = payload.clockAt ?? new Date();
-  const workDate = toDateOnlyString(now, process.env.COMPANY_TIMEZONE);
+  const workDate = toDateOnlyString(now);
 
   // 1. 取得或建立當天的 attendance_day
   let day = await db.query.attendanceDays.findFirst({
@@ -166,20 +167,83 @@ export async function recomputeAttendanceDay(
 export async function getAttendanceDaysForEmployee(
   query: AttendanceQueryByEmployee
 ) {
+  const { employeeId, fromDate, toDate, page, limit } = query;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = and(
+    employeeId ? eq(attendanceDays.employeeId, employeeId) : undefined,
+    fromDate ? gte(attendanceDays.workDate, fromDate) : undefined,
+    toDate ? lte(attendanceDays.workDate, toDate) : undefined
+  );
+
+  const [data, totalResult] = await Promise.all([
+    db.query.attendanceDays.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.workDate),
+      with: {
+        plannedShiftType: true,
+        employee: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(attendanceDays).where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
+}
+export interface AttendanceStatsQueryByEmployee {
+  employeeId?: string;
+  fromDate?: string;
+  toDate?: string;
+}
+
+/**
+ * 查詢某員工一段期間的出勤統計
+ * - totalWorkdays: 出勤天數（狀態非缺勤）
+ * - totalWorkHours: 總工時（分鐘轉小時）
+ */
+export async function getAttendanceStatsForEmployee(
+  query: AttendanceStatsQueryByEmployee
+) {
   const { employeeId, fromDate, toDate } = query;
 
-  return db.query.attendanceDays.findMany({
-    where: (t, { and, eq, gte, lte }) => {
-      const conditions: any[] = [eq(t.employeeId, employeeId)];
-      if (fromDate) conditions.push(gte(t.workDate, fromDate));
-      if (toDate) conditions.push(lte(t.workDate, toDate));
-      return and(...conditions);
-    },
-    orderBy: (t, { desc }) => desc(t.workDate),
-    with: {
-      plannedShiftType: true,
-    },
-  });
+  const whereClause = and(
+    employeeId ? eq(attendanceDays.employeeId, employeeId) : undefined,
+    fromDate ? gte(attendanceDays.workDate, fromDate) : undefined,
+    toDate ? lte(attendanceDays.workDate, toDate) : undefined
+  );
+
+  const statsResult = await db
+    .select({
+      totalWorkdays: count(attendanceDays.id),
+      totalWorkMinutes: sum(attendanceDays.workMinutes).mapWith(Number),
+    })
+    .from(attendanceDays)
+    .where(and(whereClause, not(eq(attendanceDays.status, "absent"))));
+
+  const stats = statsResult[0];
+
+  // Convert total minutes to hours, rounded to 2 decimal places
+  const totalWorkHours = stats.totalWorkMinutes
+    ? parseFloat((stats.totalWorkMinutes / 60).toFixed(2))
+    : 0;
+
+  return {
+    totalWorkdays: stats.totalWorkdays,
+    totalWorkHours,
+  };
 }
 
 /**
@@ -191,33 +255,6 @@ export async function listDailyAttendanceByDepartment(
   query: DailyAttendanceByDeptQuery
 ) {
   const { workDate, departmentId } = query;
-
-  return db.query.attendanceDays
-    .findMany({
-      where: (t, { and, eq }) => {
-        const conditions: any[] = [eq(t.workDate, workDate)];
-        if (departmentId) {
-          // department 條件要在 join 條件裡，這裡簡單先用 with 過濾（會在程式層 filter）
-          // 若要 SQL 層處理可以用 db.select/from join 的寫法。
-          return eq(t.workDate, workDate);
-        }
-        return and(...conditions);
-      },
-      orderBy: (t, { asc }) => asc(t.employeeId),
-      with: {
-        employee: {
-          with: {
-            department: true,
-            position: true,
-          },
-        },
-        plannedShiftType: true,
-      },
-    })
-    .then((rows) => {
-      if (!departmentId) return rows;
-      return rows.filter((r) => r.employee.departmentId === departmentId);
-    });
 }
 
 /**
@@ -358,33 +395,89 @@ export async function reviewCorrectionRequest(
 // 查詢補卡申請（列表用）
 // ==============================
 
-export async function listCorrectionsForEmployee(employeeId: string) {
-  return db.query.attendanceCorrections.findMany({
-    where: (t, { eq }) => eq(t.employeeId, employeeId),
-    orderBy: (t, { desc }) => desc(t.createdAt),
-    with: {
-      attendanceDay: true,
-      employee: true,
-      approver: true,
-    },
-  });
+export async function listCorrectionsForEmployee(
+  employeeId: string,
+  query: PaginationQuery
+) {
+  const { page, limit } = query;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = eq(attendanceCorrections.employeeId, employeeId);
+
+  const [data, totalResult] = await Promise.all([
+    db.query.attendanceCorrections.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.createdAt),
+      limit: limitNumber,
+      offset,
+      with: {
+        attendanceDay: true,
+        employee: true,
+        approver: true,
+      },
+    }),
+    db
+      .select({ count: count() })
+      .from(attendanceCorrections)
+      .where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
 }
 
 export async function listPendingCorrectionsForApprover(
-  approverEmployeeId: string
+  approverEmployeeId: string,
+  query: PaginationQuery
 ) {
+  const { page, limit } = query;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
   // 這裡示範查所有 pending，實務上可根據「這個 approver 是哪些人的主管」來過濾
-  return db.query.attendanceCorrections.findMany({
-    where: (t, { eq }) => eq(t.status, "pending"),
-    orderBy: (t, { asc }) => asc(t.workDate),
-    with: {
-      employee: {
-        with: {
-          department: true,
-          position: true,
+  const whereClause = eq(attendanceCorrections.status, "pending");
+
+  const [data, totalResult] = await Promise.all([
+    db.query.attendanceCorrections.findMany({
+      where: whereClause,
+      orderBy: (t, { asc }) => asc(t.workDate),
+      limit: limitNumber,
+      offset,
+      with: {
+        employee: {
+          with: {
+            department: true,
+            position: true,
+          },
         },
+        attendanceDay: true,
       },
-      attendanceDay: true,
-    },
-  });
+    }),
+    db
+      .select({ count: count() })
+      .from(attendanceCorrections)
+      .where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
 }

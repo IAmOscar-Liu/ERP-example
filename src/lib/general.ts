@@ -11,7 +11,10 @@ export function sendJsonResponse<T>(res: Response, result: ServiceResponse<T>) {
  * @param date JS Date object
  * @param timeZone e.g. "Asia/Taipei", "America/New_York"
  */
-export function toDateOnlyString(date: Date, timeZone: string = "UTC"): string {
+export function toDateOnlyString(
+  date: Date,
+  timeZone: string = process.env.COMPANY_TIMEZONE ?? "UTC"
+): string {
   // Use Intl API to convert the date to the target timezone
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone,

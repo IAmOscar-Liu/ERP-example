@@ -1,14 +1,8 @@
 // src/repository/compTime.repository.ts
-import { eq } from "drizzle-orm";
+import { and, count, eq, gte, lte } from "drizzle-orm";
 import { CustomError } from "../lib/error";
-import {
-  compTimeBalances,
-  compTimeTransactions,
-  db,
-  employees,
-  leaveRequests,
-  overtimeRequests,
-} from "../db";
+import { PaginationQuery } from "../type/request";
+import { compTimeBalances, compTimeTransactions, db } from "../db";
 
 export type CompTimeBalanceRow = typeof compTimeBalances.$inferSelect;
 export type CompTimeBalanceInsert = typeof compTimeBalances.$inferInsert;
@@ -16,7 +10,7 @@ export type CompTimeBalanceInsert = typeof compTimeBalances.$inferInsert;
 export type CompTimeTransactionRow = typeof compTimeTransactions.$inferSelect;
 export type NewCompTimeTransaction = typeof compTimeTransactions.$inferInsert;
 
-export interface CompTimeTxnFilter {
+export interface CompTimeTxnFilter extends PaginationQuery {
   employeeId?: string;
   type?: CompTimeTransactionRow["type"]; // "earn" | "spend" | "adjust"
   from?: Date; // occurredAt >= from
@@ -38,36 +32,44 @@ export async function getCompTimeBalanceForEmployee(
 /**
  * 查詢補休明細列表
  */
-export async function listCompTimeTransactions(
-  filter: CompTimeTxnFilter = {}
-): Promise<
-  (CompTimeTransactionRow & {
-    employee?: typeof employees.$inferSelect;
-    overtimeRequest?: typeof overtimeRequests.$inferSelect | null;
-    leaveRequest?: typeof leaveRequests.$inferSelect | null;
-  })[]
-> {
-  const { employeeId, type, from, to } = filter;
+export async function listCompTimeTransactions(filter: CompTimeTxnFilter = {}) {
+  const { employeeId, type, from, to, page, limit } = filter;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
 
-  return db.query.compTimeTransactions.findMany({
-    where: (t, helpers) => {
-      const conds: any[] = [];
+  const whereClause = and(
+    employeeId ? eq(compTimeTransactions.employeeId, employeeId) : undefined,
+    type ? eq(compTimeTransactions.type, type) : undefined,
+    from ? gte(compTimeTransactions.occurredAt, from) : undefined,
+    to ? lte(compTimeTransactions.occurredAt, to) : undefined
+  );
 
-      if (employeeId) conds.push(helpers.eq(t.employeeId, employeeId));
-      if (type) conds.push(helpers.eq(t.type, type as any));
-      if (from) conds.push(helpers.gte(t.occurredAt, from));
-      if (to) conds.push(helpers.lte(t.occurredAt, to));
+  const [data, totalResult] = await Promise.all([
+    db.query.compTimeTransactions.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.occurredAt),
+      with: {
+        employee: true,
+        overtimeRequest: true,
+        leaveRequest: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(compTimeTransactions).where(whereClause),
+  ]);
 
-      if (conds.length === 0) return undefined as any;
-      return helpers.and(...conds);
-    },
-    orderBy: (t, { desc }) => desc(t.occurredAt),
-    with: {
-      employee: true,
-      overtimeRequest: true,
-      leaveRequest: true,
-    },
-  });
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
 }
 
 /**

@@ -6,7 +6,7 @@
     "dev": "nodemon src/index.ts",
     "test": "jest --runInBand",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "NODE_ENV=production node dist/index.js",
     "db:push": "NODE_TLS_REJECT_UNAUTHORIZED=0 npx drizzle-kit push",
     "db:pull": "NODE_TLS_REJECT_UNAUTHORIZED=0 npx drizzle-kit pull",
     "db:generate": "npx drizzle-kit generate",

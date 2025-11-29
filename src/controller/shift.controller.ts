@@ -29,12 +29,14 @@ class ShiftController {
   // ============================
 
   async getShiftSchedules(req: Request, res: Response) {
-    const { employeeId, fromDate, toDate } = req.query;
+    const { employeeId, fromDate, toDate, page, limit } = req.query;
 
     const result = await shiftService.getShiftSchedules({
       employeeId: employeeId ? String(employeeId) : undefined,
       fromDate: String(fromDate),
       toDate: String(toDate),
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
 
     sendJsonResponse(res, result);
@@ -50,13 +52,15 @@ class ShiftController {
   // ============================
 
   async listShiftChangeRequests(req: Request, res: Response) {
-    const { employeeId, status } = req.query;
+    const { employeeId, status, page, limit } = req.query;
 
     const result = await shiftService.listShiftChangeRequests({
       employeeId: employeeId ? String(employeeId) : undefined,
       status: status
         ? (String(status) as "pending" | "approved" | "rejected")
         : undefined,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
     });
 
     sendJsonResponse(res, result);

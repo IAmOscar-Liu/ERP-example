@@ -1,8 +1,7 @@
 // src/repository/user.repository.ts
-import { eq } from "drizzle-orm";
 import bcrypt from "bcrypt";
-import { db } from "../db";
-import { users } from "../db";
+import { eq } from "drizzle-orm";
+import { db, users } from "../db";
 
 export type UserRow = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -92,4 +91,21 @@ export async function setUserActive(userId: string, isActive: boolean) {
     .returning();
 
   return user;
+}
+
+export async function getUserRoles(userId: string) {
+  return db.query.userRoles.findMany({
+    where: (t, { eq }) => eq(t.userId, userId),
+    with: {
+      role: {
+        with: {
+          rolePermissions: {
+            with: {
+              permission: true,
+            },
+          },
+        },
+      },
+    },
+  });
 }

@@ -1,8 +1,9 @@
 // src/repository/shift.ts
 
-import { and, eq } from "drizzle-orm";
-import { db, shiftChangeRequests, shiftSchedules, shiftTypes } from "../db";
-import * as schema from "../db/schema";
+import { and, count, eq, gte, lte, or } from "drizzle-orm";
+import { db, shiftChangeRequests, shiftSchedules, shiftTypes } from "../db"; // Assuming this is used elsewhere, keeping it.
+import * as schema from "../db/schema"; // Assuming this is used elsewhere, keeping it.
+import { PaginationQuery } from "../type/request";
 
 export type ShiftTypeRow = typeof schema.shiftTypes.$inferSelect;
 export type NewShiftType = typeof schema.shiftTypes.$inferInsert;
@@ -10,6 +11,17 @@ export type NewShiftType = typeof schema.shiftTypes.$inferInsert;
 export type ShiftScheduleRow = typeof schema.shiftSchedules.$inferSelect;
 export type ShiftChangeRequestRow =
   typeof schema.shiftChangeRequests.$inferSelect;
+
+export interface ShiftScheduleQueryInput extends PaginationQuery {
+  employeeId?: string;
+  fromDate: string; // YYYY-MM-DD
+  toDate: string; // YYYY-MM-DD
+}
+
+export interface ShiftChangeListInput extends PaginationQuery {
+  employeeId?: string;
+  status?: "pending" | "approved" | "rejected";
+}
 
 // ==============================
 // Shift Types & Schedules
@@ -46,23 +58,43 @@ export async function getShiftSchedules({
   employeeId,
   fromDate,
   toDate,
-}: {
-  employeeId?: string;
-  fromDate: string;
-  toDate: string;
-}) {
-  return db.query.shiftSchedules.findMany({
-    where: (t, { and, eq, gte, lte }) => {
-      const conds: any[] = [gte(t.workDate, fromDate), lte(t.workDate, toDate)];
-      if (employeeId) conds.push(eq(t.employeeId, employeeId));
-      return and(...conds);
-    },
-    orderBy: (t, { asc }) => asc(t.workDate),
-    with: {
-      employee: true,
-      shiftType: true,
-    },
-  });
+  page,
+  limit,
+}: ShiftScheduleQueryInput) {
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 31; // Default to a month's view
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = and(
+    gte(shiftSchedules.workDate, fromDate),
+    lte(shiftSchedules.workDate, toDate),
+    employeeId ? eq(shiftSchedules.employeeId, employeeId) : undefined
+  );
+
+  const [data, totalResult] = await Promise.all([
+    db.query.shiftSchedules.findMany({
+      where: whereClause,
+      orderBy: (t, { asc }) => asc(t.workDate),
+      with: {
+        employee: true,
+        shiftType: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(shiftSchedules).where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
 }
 
 export interface UpsertShiftScheduleInput {
@@ -125,27 +157,52 @@ export async function upsertShiftSchedule({
 export async function listShiftChangeRequests({
   employeeId,
   status,
-}: {
-  employeeId?: string;
-  status?: "pending" | "approved" | "rejected";
-}) {
-  return db.query.shiftChangeRequests.findMany({
-    where: (t, { and, or, eq }) => {
-      const conds: any[] = [];
-      if (employeeId) {
-        conds.push(
-          or(
-            eq(t.requesterEmployeeId, employeeId),
-            eq(t.fromEmployeeId, employeeId),
-            eq(t.toEmployeeId, employeeId)
-          )
-        );
-      }
-      if (status) conds.push(eq(t.status, status));
-      return conds.length ? and(...conds) : undefined;
-    },
-    orderBy: (t, { desc }) => desc(t.createdAt),
-  });
+  page,
+  limit,
+}: ShiftChangeListInput) {
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = and(
+    employeeId
+      ? or(
+          eq(shiftChangeRequests.requesterEmployeeId, employeeId),
+          eq(shiftChangeRequests.fromEmployeeId, employeeId),
+          eq(shiftChangeRequests.toEmployeeId, employeeId)
+        )
+      : undefined,
+    status ? eq(shiftChangeRequests.status, status) : undefined
+  );
+
+  const [data, totalResult] = await Promise.all([
+    db.query.shiftChangeRequests.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.createdAt),
+      with: {
+        requesterEmployee: true,
+        fromEmployee: true,
+        toEmployee: true,
+        fromShiftType: true,
+        toShiftType: true,
+        approver: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(shiftChangeRequests).where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
 }
 
 export interface CreateShiftChangeInput {

@@ -1,14 +1,27 @@
 // src/repository/overtime.repository.ts
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
-import { db, employees, overtimeRequests } from "../db";
+import {
+  and,
+  count,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  lte,
+  not,
+  sql,
+  sum,
+} from "drizzle-orm";
+import { db, overtimeRequests } from "../db";
 import { CustomError } from "../lib/error";
+import { PaginationQuery } from "../type/request";
 import { createCompTimeTransaction } from "./compTime.repository";
 import { EmployeeRow } from "./employee.repository";
 
 export type OvertimeRequestRow = typeof overtimeRequests.$inferSelect;
 export type NewOvertimeRequest = typeof overtimeRequests.$inferInsert;
 
-export interface OvertimeFilter {
+export interface OvertimeFilter extends PaginationQuery {
   employeeId?: string;
   status?: OvertimeRequestRow["status"];
   from?: Date; // filter by startAt >= from
@@ -84,6 +97,26 @@ export async function updateOvertimeRequest(
     throw new Error("Only pending overtime requests can be updated");
   }
 
+  // Check for overlapping approved leave requests for the same employee.
+  const overlappingRequest = await db.query.overtimeRequests.findFirst({
+    where: (lr) =>
+      and(
+        not(eq(lr.id, existing.id)),
+        eq(lr.employeeId, existing.employeeId),
+        inArray(lr.status, ["approved", "pending"]),
+        // Overlap condition: (new_start <= old_end) AND (new_end >= old_start)
+        lt(lr.startAt, data.endAt ?? existing.endAt),
+        gt(lr.endAt, data.startAt ?? existing.startAt)
+      ),
+  });
+
+  if (overlappingRequest) {
+    throw new CustomError(
+      "Overtime request dates overlap with an existing approved or pending leave.",
+      400
+    );
+  }
+
   const [updated] = await db
     .update(overtimeRequests)
     .set({
@@ -99,32 +132,83 @@ export async function updateOvertimeRequest(
 /**
  * 查詢加班申請列表（可依員工 / 狀態 / 起迄時間過濾）
  */
-export async function listOvertimeRequests(
-  filter: OvertimeFilter = {}
-): Promise<
-  (OvertimeRequestRow & {
-    employee?: typeof employees.$inferSelect;
-  })[]
-> {
+export async function listOvertimeRequests(filter: OvertimeFilter = {}) {
+  const { employeeId, status, from, to, page, limit } = filter;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = and(
+    employeeId ? eq(overtimeRequests.employeeId, employeeId) : undefined,
+    status ? eq(overtimeRequests.status, status) : undefined,
+    from ? gte(overtimeRequests.startAt, from) : undefined,
+    to ? lte(overtimeRequests.endAt, to) : undefined
+  );
+
+  const [data, totalResult] = await Promise.all([
+    db.query.overtimeRequests.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.startAt),
+      with: {
+        employee: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(overtimeRequests).where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
+}
+
+export interface OvertimeStatsFilter {
+  employeeId?: string;
+  status?: "draft" | "pending" | "approved" | "rejected" | "cancelled";
+  from?: Date;
+  to?: Date;
+}
+
+export async function getOvertimeStatsForEmployee(filter: OvertimeStatsFilter) {
   const { employeeId, status, from, to } = filter;
 
-  return db.query.overtimeRequests.findMany({
-    where: (t, helpers) => {
-      const conds: any[] = [];
+  const whereClause = and(
+    employeeId ? eq(overtimeRequests.employeeId, employeeId) : undefined,
+    status ? eq(overtimeRequests.status, status) : undefined,
+    from
+      ? gte(overtimeRequests.workDate, from.toISOString().slice(0, 10))
+      : undefined,
+    to
+      ? lte(overtimeRequests.workDate, to.toISOString().slice(0, 10))
+      : undefined
+  );
 
-      if (employeeId) conds.push(helpers.eq(t.employeeId, employeeId));
-      if (status) conds.push(helpers.eq(t.status, status as any));
-      if (from) conds.push(helpers.gte(t.startAt, from));
-      if (to) conds.push(helpers.lte(t.endAt, to));
+  const result = await db
+    .select({
+      totalPlannedHours: sum(
+        sql<number>`${overtimeRequests.plannedHours}::numeric`
+      ).mapWith(Number),
+      totalApprovedHours: sum(
+        sql<number>`${overtimeRequests.approvedHours}::numeric`
+      ).mapWith(Number),
+    })
+    .from(overtimeRequests)
+    .where(whereClause);
 
-      if (conds.length === 0) return undefined as any;
-      return helpers.and(...conds);
-    },
-    orderBy: (t, { asc, desc }) => desc(t.startAt),
-    with: {
-      employee: true,
-    },
-  });
+  const stats = result[0];
+
+  return {
+    totalPlannedHours: stats.totalPlannedHours ?? 0,
+    totalApprovedHours: stats.totalApprovedHours ?? 0,
+  };
 }
 
 export interface ReviewOvertimePayload {
@@ -248,7 +332,8 @@ export async function cancelOvertimeRequest(payload: CancelOvertimePayload) {
         eq(overtimeRequests.id, payload.overtimeRequestId),
         eq(overtimeRequests.status, "pending")
       )
-    );
+    )
+    .returning();
 
   return updated;
 }

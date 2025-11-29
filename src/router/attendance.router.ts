@@ -11,6 +11,7 @@ router.post(
   AttendanceMiddleware.clock,
   AttendanceController.clock
 );
+router.get("/list", isAuth, AttendanceController.getAttendance);
 router.get("/:id", isAuth, AttendanceController.getEmployeeAttendance);
 
 export default router;

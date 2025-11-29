@@ -7,6 +7,7 @@ export * from "./payroll";
 export * from "./auth";
 
 // relations
+export * from "../relations/auth.relations";
 export * from "../relations/attendance.relations";
 export * from "../relations/leave.relations";
 export * from "../relations/overtime.relations";

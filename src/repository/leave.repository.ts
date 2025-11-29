@@ -1,12 +1,25 @@
 // src/repository/leave.repository.ts
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  gt,
+  gte,
+  inArray,
+  lt,
+  lte,
+  not,
+  sql,
+  sum,
+} from "drizzle-orm";
 import { db, leaveRequests, leaveTypes } from "../db";
 import { CustomError } from "../lib/error";
-import { EmployeeRow } from "./employee.repository";
+import { PaginationQuery } from "../type/request";
 import {
   createCompTimeTransaction,
   getCompTimeBalanceForEmployee,
 } from "./compTime.repository";
+import { EmployeeRow } from "./employee.repository";
 
 export type LeaveTypeRow = typeof leaveTypes.$inferSelect;
 
@@ -17,7 +30,7 @@ export async function listLeaveTypes() {
   return db.query.leaveTypes.findMany();
 }
 
-export interface LeaveFilter {
+export interface LeaveFilter extends PaginationQuery {
   employeeId?: string;
   status?: LeaveRequestRow["status"];
   from?: Date;
@@ -109,6 +122,26 @@ export async function updateLeaveRequest(
     throw new CustomError("Only pending leave requests can be updated", 400);
   }
 
+  // Check for overlapping approved leave requests for the same employee.
+  const overlappingRequest = await db.query.leaveRequests.findFirst({
+    where: (lr) =>
+      and(
+        not(eq(lr.id, existing.id)),
+        eq(lr.employeeId, existing.employeeId),
+        inArray(lr.status, ["approved", "pending"]),
+        // Overlap condition: (new_start <= old_end) AND (new_end >= old_start)
+        lt(lr.startAt, data.endAt ?? existing.endAt),
+        gt(lr.endAt, data.startAt ?? existing.startAt)
+      ),
+  });
+
+  if (overlappingRequest) {
+    throw new CustomError(
+      "Leave request dates overlap with an existing approved or pending leave.",
+      400
+    );
+  }
+
   const [updated] = await db
     .update(leaveRequests)
     .set({
@@ -122,23 +155,76 @@ export async function updateLeaveRequest(
 }
 
 export async function listLeaveRequests(filter: LeaveFilter = {}) {
+  const { employeeId, status, from, to, page, limit } = filter;
+  const pageNumber = page ?? 1;
+  const limitNumber = limit ?? 10;
+  const offset = (pageNumber - 1) * limitNumber;
+
+  const whereClause = and(
+    employeeId ? eq(leaveRequests.employeeId, employeeId) : undefined,
+    status ? eq(leaveRequests.status, status) : undefined,
+    from ? gte(leaveRequests.startAt, from) : undefined,
+    to ? lte(leaveRequests.endAt, to) : undefined
+  );
+
+  const [data, totalResult] = await Promise.all([
+    db.query.leaveRequests.findMany({
+      where: whereClause,
+      orderBy: (t, { desc }) => desc(t.startAt),
+      with: {
+        employee: true,
+        leaveType: true,
+      },
+      limit: limitNumber,
+      offset,
+    }),
+    db.select({ count: count() }).from(leaveRequests).where(whereClause),
+  ]);
+
+  const total = totalResult[0].count;
+  const totalPages = Math.ceil(total / limitNumber);
+
+  return {
+    items: data,
+    total,
+    page: pageNumber,
+    limit: limitNumber,
+    totalPages,
+  };
+}
+
+export interface LeaveStatsFilter {
+  employeeId?: string;
+  status?: "draft" | "pending" | "approved" | "rejected" | "cancelled";
+  from?: Date;
+  to?: Date;
+}
+
+export async function getLeaveStatsForEmployee(filter: LeaveStatsFilter) {
   const { employeeId, status, from, to } = filter;
-  return db.query.leaveRequests.findMany({
-    where: (t, { and, eq, gte, lte }) => {
-      const conditions: any[] = [];
-      if (employeeId) conditions.push(eq(t.employeeId, employeeId));
-      if (status) conditions.push(eq(t.status, status as any));
-      if (from) conditions.push(gte(t.startAt, from));
-      if (to) conditions.push(lte(t.endAt, to));
-      if (conditions.length === 0) return undefined as any;
-      return and(...conditions);
-    },
-    orderBy: (t, { desc }) => desc(t.startAt),
-    with: {
-      employee: true,
-      leaveType: true,
-    },
-  });
+
+  const whereClause = and(
+    employeeId ? eq(leaveRequests.employeeId, employeeId) : undefined,
+    status ? eq(leaveRequests.status, status) : undefined,
+    from ? gte(leaveRequests.startAt, from) : undefined,
+    to ? lte(leaveRequests.startAt, to) : undefined
+  );
+
+  const result = await db
+    .select({
+      totalHours: sum(sql<number>`${leaveRequests.hours}::numeric`).mapWith(
+        Number
+      ),
+    })
+    .from(leaveRequests)
+    .where(whereClause);
+
+  const stats = result[0];
+
+  return {
+    // Use ?? 0 to handle cases where the sum is null (no matching records)
+    totalHours: stats.totalHours ?? 0,
+  };
 }
 
 export interface ReviewLeavePayload {

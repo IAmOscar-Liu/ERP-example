@@ -3,14 +3,19 @@ import authService from "../service/auth.service";
 import { sendJsonResponse } from "../lib/general";
 import { generateToken, sendRefreshToken, validateToken } from "../lib/token";
 import { RequestWithId } from "../type/request";
+import { getUserRoles } from "../repository";
 
 class AuthController {
   async register(req: Request, res: Response) {
     const result = await authService.createAccount(req.body);
     if (result.success) {
+      sendRefreshToken(res, result.data);
       sendJsonResponse(res, {
         ...result,
-        data: { user: result.data, token: generateToken(result.data, "30d") },
+        data: {
+          employee: result.data,
+          token: generateToken(result.data, "30d"),
+        },
       });
     } else {
       sendJsonResponse(res, result);
@@ -20,9 +25,21 @@ class AuthController {
   async login(req: Request, res: Response) {
     const result = await authService.login(req.body);
     if (result.success) {
+      const userId = result.data?.userId;
+      let roles: Awaited<ReturnType<typeof getUserRoles>>;
+      if (userId) {
+        roles = await getUserRoles(userId);
+      }
+
+      sendRefreshToken(res, result.data);
       sendJsonResponse(res, {
         ...result,
-        data: { user: result.data, token: generateToken(result.data, "30d") },
+        data: {
+          employee: result.data,
+          // @ts-expect-error
+          roles,
+          token: generateToken(result.data, "30d"),
+        },
       });
     } else {
       sendJsonResponse(res, result);
@@ -36,7 +53,25 @@ class AuthController {
 
   async profile(req: RequestWithId, res: Response): Promise<any> {
     const result = await authService.getAccountById(req.userId ?? "");
-    sendJsonResponse(res, result);
+
+    if (result.success) {
+      const userId = result.data?.userId;
+      let roles: Awaited<ReturnType<typeof getUserRoles>>;
+      if (userId) {
+        roles = await getUserRoles(userId);
+      }
+
+      sendJsonResponse(res, {
+        ...result,
+        data: {
+          employee: result.data,
+          // @ts-expect-error
+          roles,
+        },
+      });
+    } else {
+      sendJsonResponse(res, result);
+    }
   }
 
   async refreshToken(req: RequestWithId, res: Response): Promise<any> {
